@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 // Default seed data derived from Plakar's product-marketing-context and ICP documents
 const DEFAULT_PROFILE = {
   companyName: "Plakar",
