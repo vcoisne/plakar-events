@@ -159,8 +159,9 @@ model EventStrategy {
   messagingJson        Json     @default("[]")
   talkingPointsText    String   @default("")
   staffingText         String   @default("")
-  sideEventsText       String   @default("")
-  cfpAnglesJson        Json     @default("[]")
+  sideEventsText           String   @default("")
+  partnerOpportunitiesText String   @default("")
+  cfpAnglesJson            Json     @default("[]")
   cfpDraftText         String   @default("")
   generatedAt          DateTime @default(now())
 }

@@ -9,6 +9,9 @@ import {
   Loader2,
   AlertCircle,
   Check,
+  Sparkles,
+  Copy,
+  RotateCcw,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -66,6 +69,30 @@ interface PlanningStatus {
   updatedAt: string;
 }
 
+interface MessagingAngle {
+  angle: string;
+  detail: string;
+}
+
+interface CfpAngle {
+  title: string;
+  abstract: string;
+}
+
+interface EventStrategy {
+  id: string;
+  recommendationType: string;
+  recommendationReason: string;
+  messagingJson: MessagingAngle[];
+  talkingPointsText: string;
+  staffingText: string;
+  sideEventsText: string;
+  partnerOpportunitiesText: string;
+  cfpAnglesJson: CfpAngle[];
+  cfpDraftText: string;
+  generatedAt: string;
+}
+
 interface EventDetail {
   id: string;
   name: string;
@@ -88,6 +115,7 @@ interface EventDetail {
   score: EventScore | null;
   roi: EventROI | null;
   planningStatus: PlanningStatus | null;
+  strategy: EventStrategy | null;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -129,19 +157,29 @@ function confidenceBadge(level: string) {
   return map[level] ?? map.low;
 }
 
-function cfpStatus(cfpDeadline: string | null): { label: string; color: string } {
+function cfpStatusInfo(cfpDeadline: string | null): { label: string; color: string } {
   if (!cfpDeadline) return { label: "Unknown", color: "bg-gray-100 text-gray-500" };
   const diff = new Date(cfpDeadline).getTime() - Date.now();
-  if (diff < 0) return { label: "Closed", color: "bg-red-100 text-red-600" };
-  return { label: "Open", color: "bg-green-100 text-green-700" };
+  if (diff < 0) return { label: "Closed", color: "bg-gray-100 text-gray-500" };
+  return { label: "Open", color: "bg-teal-100 text-teal-700" };
 }
 
 function daysUntil(d: string | null): string {
   if (!d) return "";
   const diff = Math.ceil((new Date(d).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-  if (diff < 0) return `${Math.abs(diff)}d ago`;
-  if (diff === 0) return "today";
-  return `${diff}d remaining`;
+  if (diff < 0) return `Closed ${Math.abs(diff)} days ago`;
+  if (diff === 0) return "Closes today";
+  return `${diff} days remaining`;
+}
+
+function recommendationBadgeColor(type: string): string {
+  switch (type) {
+    case "Sponsor": return "bg-blue-100 text-blue-800 border border-blue-200";
+    case "Speak": return "bg-green-100 text-green-800 border border-green-200";
+    case "Attend": return "bg-amber-100 text-amber-800 border border-amber-200";
+    case "Pass": return "bg-gray-100 text-gray-600 border border-gray-200";
+    default: return "bg-gray-100 text-gray-600 border border-gray-200";
+  }
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -213,12 +251,56 @@ function ScoreCircle({ score }: ScoreCircleProps) {
   );
 }
 
+function AiBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-purple-600 bg-purple-50 border border-purple-100 rounded-full px-2 py-0.5">
+      <Sparkles className="h-3 w-3" />
+      AI-generated
+    </span>
+  );
+}
+
+// ─── Talking points renderer ──────────────────────────────────────────────────
+
+function TalkingPoints({ text }: { text: string }) {
+  const lines = text.split("\n").filter((l) => l.trim());
+  return (
+    <ul className="space-y-1.5">
+      {lines.map((line, i) => {
+        const cleaned = line.replace(/^[-*•]\s*/, "");
+        return (
+          <li key={i} className="flex items-start gap-2 text-sm text-gray-700">
+            <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-indigo-400 flex-shrink-0" />
+            {cleaned}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function EventDetailPage({ params }: { params: { id: string } }) {
   const [event, setEvent] = useState<EventDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Strategy state
+  const [strategy, setStrategy] = useState<EventStrategy | null>(null);
+  const [strategyGenerating, setStrategyGenerating] = useState(false);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
+
+  // Override state
+  const [overrideType, setOverrideType] = useState<string>("");
+  const [overrideReason, setOverrideReason] = useState<string>("");
+  const [overrideSaving, setOverrideSaving] = useState(false);
+  const [overrideSaved, setOverrideSaved] = useState(false);
+
+  // CFP expand state
+  const [cfpAnglesOpen, setCfpAnglesOpen] = useState<boolean[]>([false, false, false]);
+  const [cfpDraftOpen, setCfpDraftOpen] = useState(false);
+  const [copiedDraft, setCopiedDraft] = useState(false);
 
   // Rescore state
   const [rescoring, setRescoring] = useState(false);
@@ -250,6 +332,12 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
       const data = (await res.json()) as EventDetail;
       setEvent(data);
 
+      if (data.strategy) {
+        setStrategy(data.strategy);
+        setOverrideType(data.strategy.recommendationType);
+        setOverrideReason(data.strategy.recommendationReason);
+      }
+
       // Pre-fill planning status
       if (data.planningStatus) {
         setPlanningStatus(data.planningStatus.status);
@@ -277,6 +365,46 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
   useEffect(() => {
     fetchEvent();
   }, [fetchEvent]);
+
+  // ── Generate / regenerate strategy ──
+  const handleGenerateStrategy = async () => {
+    setStrategyGenerating(true);
+    setStrategyError(null);
+    try {
+      const res = await fetch(`/api/events/${params.id}/strategy`, { method: "POST" });
+      if (!res.ok) throw new Error("Strategy generation failed");
+      const newStrategy = (await res.json()) as EventStrategy;
+      setStrategy(newStrategy);
+      setOverrideType(newStrategy.recommendationType);
+      setOverrideReason(newStrategy.recommendationReason);
+      setEvent((prev) => prev ? { ...prev, strategy: newStrategy } : prev);
+    } catch (err) {
+      setStrategyError(err instanceof Error ? err.message : "Generation failed");
+    } finally {
+      setStrategyGenerating(false);
+    }
+  };
+
+  // ── Save override ──
+  const handleSaveOverride = async () => {
+    setOverrideSaving(true);
+    try {
+      const res = await fetch(`/api/events/${params.id}/strategy-override`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recommendationType: overrideType, recommendationReason: overrideReason }),
+      });
+      if (!res.ok) throw new Error("Override failed");
+      const updated = (await res.json()) as EventStrategy;
+      setStrategy((prev) => prev ? { ...prev, recommendationType: updated.recommendationType, recommendationReason: updated.recommendationReason } : prev);
+      setOverrideSaved(true);
+      setTimeout(() => setOverrideSaved(false), 2500);
+    } catch {
+      // silent
+    } finally {
+      setOverrideSaving(false);
+    }
+  };
 
   // ── Rescore ──
   const handleRescore = async () => {
@@ -373,9 +501,8 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
   const roi = event.roi;
   const topics = Array.isArray(event.topicsJson) ? event.topicsJson : [];
   const hasCFP = event.cfpDeadline || (event.cfpInfoText && event.cfpInfoText !== "unknown");
-  const cfp = cfpStatus(event.cfpDeadline);
+  const cfp = cfpStatusInfo(event.cfpDeadline);
 
-  // CPL benchmark from profile is not available client-side; we just show the range
   const cplDisplay =
     roi?.cplLow !== null && roi?.cplLow !== undefined && roi?.cplHigh !== null && roi?.cplHigh !== undefined
       ? `${formatMoney(roi.cplLow)} – ${formatMoney(roi.cplHigh)} CPL`
@@ -389,6 +516,18 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
   const calcInputs: ROIInputRow[] = Array.isArray(roi?.calculationInputsJson)
     ? (roi.calculationInputsJson as ROIInputRow[])
     : [];
+
+  const messagingAngles: MessagingAngle[] = Array.isArray(strategy?.messagingJson)
+    ? (strategy.messagingJson as MessagingAngle[])
+    : [];
+
+  const cfpAngles: CfpAngle[] = Array.isArray(strategy?.cfpAnglesJson)
+    ? (strategy.cfpAnglesJson as CfpAngle[])
+    : [];
+
+  const toggleCfpAngle = (i: number) => {
+    setCfpAnglesOpen((prev) => prev.map((v, idx) => (idx === i ? !v : v)));
+  };
 
   return (
     <div className="p-6 md:p-8">
@@ -557,6 +696,209 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
                   >
                     {rescoring ? "Scoring…" : "Compute score"}
                   </button>
+                </div>
+              )}
+            </div>
+
+            {/* ── Recommendation section ── */}
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900 text-lg">Recommendation</h2>
+                {strategy && <AiBadge />}
+              </div>
+
+              {strategy ? (
+                <div>
+                  {/* Badge */}
+                  <div className="mb-3">
+                    <span
+                      className={`inline-block px-4 py-1.5 rounded-full text-sm font-bold ${recommendationBadgeColor(strategy.recommendationType)}`}
+                    >
+                      {strategy.recommendationType}
+                    </span>
+                  </div>
+
+                  {/* Reason */}
+                  <p className="text-sm text-gray-700 leading-relaxed mb-5">
+                    {strategy.recommendationReason}
+                  </p>
+
+                  {/* Override form */}
+                  <div className="border border-gray-100 rounded-lg p-4 bg-gray-50">
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">
+                      Override recommendation
+                    </p>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Type</label>
+                        <select
+                          value={overrideType}
+                          onChange={(e) => setOverrideType(e.target.value)}
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                        >
+                          <option value="Sponsor">Sponsor</option>
+                          <option value="Speak">Speak</option>
+                          <option value="Attend">Attend</option>
+                          <option value="Pass">Pass</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Reason</label>
+                        <textarea
+                          rows={3}
+                          value={overrideReason}
+                          onChange={(e) => setOverrideReason(e.target.value)}
+                          placeholder="Override reason…"
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                        />
+                      </div>
+                      <button
+                        onClick={handleSaveOverride}
+                        disabled={overrideSaving}
+                        className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-60 flex items-center gap-1.5"
+                      >
+                        {overrideSaving ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : overrideSaved ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : null}
+                        {overrideSaved ? "Saved" : "Save override"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-6">
+                  <p className="text-sm text-gray-400 mb-4">
+                    Generate a strategy brief to get a recommendation.
+                  </p>
+                  <button
+                    onClick={handleGenerateStrategy}
+                    disabled={strategyGenerating}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:opacity-60"
+                  >
+                    {strategyGenerating ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" />
+                    )}
+                    {strategyGenerating ? "Generating with Claude…" : "Generate strategy brief"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* ── Strategy Brief section ── */}
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900 text-lg">Strategy Brief</h2>
+                {strategy && (
+                  <div className="flex items-center gap-2">
+                    <AiBadge />
+                    <button
+                      onClick={handleGenerateStrategy}
+                      disabled={strategyGenerating}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-60"
+                    >
+                      {strategyGenerating ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      )}
+                      Regenerate
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {strategyError && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                  {strategyError}
+                </div>
+              )}
+
+              {!strategy ? (
+                <div className="text-center py-8">
+                  <Sparkles className="h-8 w-8 text-purple-300 mx-auto mb-3" />
+                  <p className="text-sm text-gray-500 mb-4">
+                    No strategy brief yet. Generate one to get messaging angles, staffing guidance, CFP talk angles, and more.
+                  </p>
+                  <button
+                    onClick={handleGenerateStrategy}
+                    disabled={strategyGenerating}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:opacity-60 transition-colors"
+                  >
+                    {strategyGenerating ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" />
+                    )}
+                    {strategyGenerating ? "Generating with Claude…" : "Generate strategy brief"}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {/* Messaging angles */}
+                  {messagingAngles.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-3">Messaging Angles</h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        {messagingAngles.map((m, i) => (
+                          <div
+                            key={i}
+                            className="border border-indigo-100 bg-indigo-50 rounded-lg p-3"
+                          >
+                            <p className="text-xs font-semibold text-indigo-800 mb-1">{m.angle}</p>
+                            <p className="text-xs text-indigo-700 leading-relaxed">{m.detail}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Talking points */}
+                  {strategy.talkingPointsText && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2">Talking Points</h3>
+                      <TalkingPoints text={strategy.talkingPointsText} />
+                    </div>
+                  )}
+
+                  {/* Staffing */}
+                  {strategy.staffingText && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-1">Staffing</h3>
+                      <p className="text-sm text-gray-600 leading-relaxed">{strategy.staffingText}</p>
+                    </div>
+                  )}
+
+                  {/* Side events */}
+                  {strategy.sideEventsText && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-1">Side Events</h3>
+                      <p className="text-sm text-gray-600 leading-relaxed">{strategy.sideEventsText}</p>
+                    </div>
+                  )}
+
+                  {/* Partner opportunities */}
+                  {strategy.partnerOpportunitiesText && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-1">Partner Opportunities</h3>
+                      <p className="text-sm text-gray-600 leading-relaxed">{strategy.partnerOpportunitiesText}</p>
+                    </div>
+                  )}
+
+                  {/* AI disclaimer */}
+                  <div className="flex items-center gap-2 p-3 bg-purple-50 border border-purple-100 rounded-lg text-xs text-purple-700">
+                    <Sparkles className="h-3.5 w-3.5 flex-shrink-0" />
+                    AI-generated suggestion — review and adapt before sharing externally.
+                    {strategy.generatedAt && (
+                      <span className="ml-auto text-purple-500">
+                        Generated {new Date(strategy.generatedAt).toLocaleDateString()}
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -753,6 +1095,8 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
             {hasCFP && (
               <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6">
                 <h2 className="font-semibold text-gray-900 text-lg mb-3">Call for Proposals</h2>
+
+                {/* Status + deadline */}
                 <div className="flex flex-wrap items-center gap-3 mb-3">
                   <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${cfp.color}`}>
                     {cfp.label}
@@ -764,8 +1108,97 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
                     </span>
                   )}
                 </div>
+
                 {event.cfpInfoText && event.cfpInfoText !== "unknown" && (
-                  <p className="text-sm text-gray-600 leading-relaxed">{event.cfpInfoText}</p>
+                  <p className="text-sm text-gray-600 leading-relaxed mb-4">{event.cfpInfoText}</p>
+                )}
+
+                {/* Talk angles from strategy */}
+                {cfpAngles.length > 0 && (
+                  <div className="mb-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <h3 className="text-sm font-semibold text-gray-700">Talk Angles</h3>
+                      <AiBadge />
+                    </div>
+                    <div className="space-y-2">
+                      {cfpAngles.map((angle, i) => (
+                        <div key={i} className="border border-gray-200 rounded-lg overflow-hidden">
+                          <button
+                            onClick={() => toggleCfpAngle(i)}
+                            className="w-full flex items-center justify-between px-4 py-3 text-left bg-gray-50 hover:bg-gray-100 transition-colors"
+                          >
+                            <span className="text-sm font-medium text-gray-800">{angle.title}</span>
+                            {cfpAnglesOpen[i] ? (
+                              <ChevronUp className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                            )}
+                          </button>
+                          {cfpAnglesOpen[i] && (
+                            <div className="px-4 py-3 text-sm text-gray-600 leading-relaxed border-t border-gray-100">
+                              {angle.abstract}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* CFP Draft */}
+                {strategy?.cfpDraftText ? (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-semibold text-gray-700">Proposal Draft</h3>
+                        <AiBadge />
+                      </div>
+                      <button
+                        onClick={() => setCfpDraftOpen(!cfpDraftOpen)}
+                        className="text-xs text-indigo-600 hover:underline flex items-center gap-1"
+                      >
+                        {cfpDraftOpen ? "Hide" : "Show full abstract"}
+                        {cfpDraftOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                    {cfpDraftOpen && (
+                      <div className="relative">
+                        <textarea
+                          readOnly
+                          value={strategy.cfpDraftText}
+                          rows={10}
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-gray-50 text-gray-700 font-mono resize-none"
+                        />
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(strategy.cfpDraftText);
+                            setCopiedDraft(true);
+                            setTimeout(() => setCopiedDraft(false), 2000);
+                          }}
+                          className="absolute top-2 right-2 inline-flex items-center gap-1 px-2 py-1 text-xs bg-white border border-gray-200 rounded hover:bg-gray-50 text-gray-600"
+                        >
+                          {copiedDraft ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                          {copiedDraft ? "Copied" : "Copy"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <p className="text-xs text-gray-400 mb-2">Generate a strategy brief to get a proposal draft.</p>
+                    <button
+                      onClick={handleGenerateStrategy}
+                      disabled={strategyGenerating}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:opacity-60"
+                    >
+                      {strategyGenerating ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-4 w-4" />
+                      )}
+                      {strategyGenerating ? "Generating…" : "Generate proposal draft"}
+                    </button>
+                  </div>
                 )}
               </div>
             )}
