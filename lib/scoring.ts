@@ -266,6 +266,72 @@ Return JSON exactly:
   }
 }
 
+// ─── Heuristic-only public export (for ingestion, no DB lookup needed) ───────
+
+interface RawEventForScore {
+  id: string;
+  name: string;
+  eventType: string;
+  topicsJson: unknown;
+  description: string;
+  city: string;
+  country: string;
+  region: string;
+  attendanceEstimate: number | null;
+  sponsorshipCost: number | null;
+  cfpDeadline: Date | null;
+}
+
+interface RawProfileForScore {
+  personasJson: unknown;
+  productsJson: unknown;
+  regionsJson: unknown;
+  competitorsJson: unknown;
+  budgetRangesJson: unknown;
+  avgDealValue: number;
+  leadToOppRate: number;
+}
+
+export function heuristicScoreOnly(
+  event: RawEventForScore,
+  profile: RawProfileForScore
+): {
+  audienceMatch: number;
+  topicRelevance: number;
+  strategicAlignment: number;
+  budgetFit: number;
+  competitorSignal: number;
+  sentiment: number;
+  totalScore: number;
+  confidence: "high" | "medium" | "low";
+  explanations: Record<string, string>;
+} {
+  const profileData: CompanyProfileData = {
+    personasJson: Array.isArray(profile.personasJson) ? (profile.personasJson as unknown as NameDescription[]) : [],
+    productsJson: Array.isArray(profile.productsJson) ? (profile.productsJson as unknown as NameDescription[]) : [],
+    regionsJson: Array.isArray(profile.regionsJson) ? (profile.regionsJson as unknown as string[]) : [],
+    competitorsJson: Array.isArray(profile.competitorsJson) ? (profile.competitorsJson as unknown as string[]) : [],
+    budgetRangesJson: (profile.budgetRangesJson as unknown as BudgetRanges) ?? {},
+    avgDealValue: profile.avgDealValue,
+    leadToOppRate: profile.leadToOppRate,
+  };
+  const eventData: EventData = {
+    id: event.id,
+    name: event.name,
+    eventType: event.eventType,
+    topicsJson: event.topicsJson,
+    description: event.description,
+    city: event.city,
+    country: event.country,
+    region: event.region,
+    attendanceEstimate: event.attendanceEstimate,
+    sponsorshipCost: event.sponsorshipCost,
+    cfpDeadline: event.cfpDeadline,
+  };
+  const result = heuristicScore(eventData, profileData);
+  return { ...result };
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function computeScore(eventId: string): Promise<{

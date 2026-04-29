@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Loader2, AlertCircle, TrendingUp, Calendar, ClipboardList, DollarSign } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Loader2, AlertCircle, TrendingUp, Calendar, ClipboardList, DollarSign, RefreshCw } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +42,20 @@ interface DashboardData {
   };
 }
 
+interface IngestionSourceResult {
+  created: number;
+  updated: number;
+  errors: string[];
+}
+
+interface IngestionLog {
+  timestamp: string;
+  created: number;
+  updated: number;
+  lumaErrors: string[];
+  webErrors: string[];
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(d: string | null): string {
@@ -65,6 +79,42 @@ function scoreBg(score: number): string {
   return "bg-red-100 text-red-600";
 }
 
+const LAST_SYNC_KEY = "plakar_last_sync";
+const INGESTION_LOG_KEY = "plakar_ingestion_log";
+
+// ─── Toast component ──────────────────────────────────────────────────────────
+
+function Toast({
+  message,
+  type,
+  onDismiss,
+}: {
+  message: string;
+  type: "success" | "error";
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    const t = setTimeout(onDismiss, 5000);
+    return () => clearTimeout(t);
+  }, [onDismiss]);
+
+  return (
+    <div
+      className={`fixed bottom-4 right-4 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg text-sm font-medium max-w-sm ${
+        type === "success"
+          ? "bg-green-600 text-white"
+          : "bg-red-600 text-white"
+      }`}
+    >
+      {type === "error" && <AlertCircle className="h-4 w-4 flex-shrink-0" />}
+      <span>{message}</span>
+      <button onClick={onDismiss} className="ml-2 opacity-75 hover:opacity-100 text-lg leading-none">
+        ×
+      </button>
+    </div>
+  );
+}
+
 // ─── Dashboard page ───────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
@@ -72,13 +122,88 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  // Ingestion state
+  const [discovering, setDiscovering] = useState(false);
+  const [lastSync, setLastSync] = useState<string | null>(null);
+  const [ingestionLog, setIngestionLog] = useState<IngestionLog | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
+  const loadDashboard = useCallback(() => {
+    setLoading(true);
     fetch("/api/dashboard")
       .then((r) => r.json())
       .then((d: DashboardData) => setData(d))
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load dashboard"))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadDashboard();
+    // Load persisted sync info
+    const storedSync = localStorage.getItem(LAST_SYNC_KEY);
+    if (storedSync) setLastSync(storedSync);
+    const storedLog = localStorage.getItem(INGESTION_LOG_KEY);
+    if (storedLog) {
+      try {
+        setIngestionLog(JSON.parse(storedLog) as IngestionLog);
+      } catch {
+        // ignore
+      }
+    }
+  }, [loadDashboard]);
+
+  const handleDiscover = async () => {
+    setDiscovering(true);
+    try {
+      const res = await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sources: ["luma", "web"] }),
+      });
+
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error ?? `HTTP ${res.status}`);
+      }
+
+      const result = (await res.json()) as {
+        lumaResult: IngestionSourceResult;
+        webResult: IngestionSourceResult;
+        totalCreated: number;
+        totalUpdated: number;
+        duration: number;
+      };
+
+      const now = new Date().toISOString();
+      const log: IngestionLog = {
+        timestamp: now,
+        created: result.totalCreated,
+        updated: result.totalUpdated,
+        lumaErrors: result.lumaResult.errors,
+        webErrors: result.webResult.errors,
+      };
+
+      localStorage.setItem(LAST_SYNC_KEY, now);
+      localStorage.setItem(INGESTION_LOG_KEY, JSON.stringify(log));
+      setLastSync(now);
+      setIngestionLog(log);
+
+      setToast({
+        message: `Found ${result.totalCreated} new event${result.totalCreated !== 1 ? "s" : ""}, updated ${result.totalUpdated}`,
+        type: "success",
+      });
+
+      // Refresh dashboard data
+      loadDashboard();
+    } catch (err) {
+      setToast({
+        message: `Discovery failed: ${err instanceof Error ? err.message : String(err)}`,
+        type: "error",
+      });
+    } finally {
+      setDiscovering(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -109,10 +234,47 @@ export default function DashboardPage() {
 
   return (
     <div className="p-6 md:p-8">
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onDismiss={() => setToast(null)}
+        />
+      )}
+
       <div className="max-w-5xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="mt-1 text-gray-500">Your conference intelligence overview.</p>
+        {/* ── Header with Discover button ── */}
+        <div className="mb-8 flex items-start justify-between flex-wrap gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+            <p className="mt-1 text-gray-500">Your conference intelligence overview.</p>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <button
+              onClick={handleDiscover}
+              disabled={discovering}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              {discovering ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Discovering…
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4" />
+                  Discover Events
+                </>
+              )}
+            </button>
+            {lastSync && (
+              <p className="text-xs text-gray-400">
+                Last synced: {new Date(lastSync).toLocaleString("en-US", {
+                  month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+                })}
+              </p>
+            )}
+          </div>
         </div>
 
         {/* ── Stats row ── */}
@@ -252,6 +414,53 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+
+        {/* ── Ingestion log ── */}
+        {ingestionLog && (
+          <div className="mt-6 bg-gray-50 border border-gray-200 rounded-xl p-5">
+            <h2 className="font-semibold text-gray-700 mb-3 text-sm flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 text-gray-400" />
+              Last Ingestion Log
+              <span className="font-normal text-gray-400">
+                · {new Date(ingestionLog.timestamp).toLocaleString("en-US", {
+                  month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+                })}
+              </span>
+            </h2>
+            <div className="flex gap-4 flex-wrap text-sm mb-3">
+              <span className="text-green-700 font-medium">
+                +{ingestionLog.created} created
+              </span>
+              <span className="text-blue-700 font-medium">
+                {ingestionLog.updated} updated
+              </span>
+              {(ingestionLog.lumaErrors.length + ingestionLog.webErrors.length) > 0 && (
+                <span className="text-amber-600 font-medium">
+                  {ingestionLog.lumaErrors.length + ingestionLog.webErrors.length} warnings
+                </span>
+              )}
+            </div>
+            {(ingestionLog.lumaErrors.length > 0 || ingestionLog.webErrors.length > 0) && (
+              <details className="mt-2">
+                <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700">
+                  Show warnings ({ingestionLog.lumaErrors.length + ingestionLog.webErrors.length})
+                </summary>
+                <ul className="mt-2 space-y-1">
+                  {ingestionLog.lumaErrors.map((e, i) => (
+                    <li key={`luma-${i}`} className="text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded">
+                      [Luma] {e}
+                    </li>
+                  ))}
+                  {ingestionLog.webErrors.map((e, i) => (
+                    <li key={`web-${i}`} className="text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded">
+                      [Web] {e}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
