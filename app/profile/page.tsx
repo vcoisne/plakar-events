@@ -209,6 +209,8 @@ export default function CompanyProfilePage() {
   const [errors, setErrors] = useState<{ companyName?: string; description?: string }>({});
   const [competitorInput, setCompetitorInput] = useState("");
   const [regionInput, setRegionInput] = useState("");
+  const [calTestStatus, setCalTestStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [calTestError, setCalTestError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load profile on mount
@@ -858,17 +860,67 @@ export default function CompanyProfilePage() {
           >
             <div className="pt-4">
               <Label>Calendar name</Label>
-              <input
-                type="text"
-                value={profile.calendarName}
-                onChange={(e) => update({ calendarName: e.target.value })}
-                placeholder="Plakar Events"
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={profile.calendarName}
+                  onChange={(e) => {
+                    update({ calendarName: e.target.value });
+                    setCalTestStatus("idle");
+                  }}
+                  placeholder="Plakar Events"
+                  className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  type="button"
+                  disabled={calTestStatus === "testing"}
+                  onClick={async () => {
+                    setCalTestStatus("testing");
+                    setCalTestError(null);
+                    try {
+                      const res = await fetch("/api/profile/test-calendar", { method: "POST" });
+                      const data = await res.json();
+                      if (data.ok) {
+                        setCalTestStatus("ok");
+                      } else {
+                        setCalTestStatus("error");
+                        setCalTestError(data.error ?? "Unknown error");
+                      }
+                    } catch {
+                      setCalTestStatus("error");
+                      setCalTestError("Network error");
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-60 transition-colors flex-shrink-0"
+                >
+                  {calTestStatus === "testing" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Check className="h-3.5 w-3.5" />
+                  )}
+                  Test connection
+                </button>
+              </div>
+
+              {calTestStatus === "ok" && (
+                <p className="mt-2 text-xs text-green-600 flex items-center gap-1">
+                  <Check className="h-3.5 w-3.5" />
+                  Connected to &apos;{profile.calendarName}&apos; calendar
+                </p>
+              )}
+              {calTestStatus === "error" && (
+                <p className="mt-2 text-xs text-red-600 flex items-center gap-1">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  {calTestError ?? "Connection failed"}
+                </p>
+              )}
+
               <p className="mt-2 text-xs text-gray-400">
                 This must be the exact name of an existing Google Calendar in the connected
-                account. Events will be created in this calendar when approved in the planning
-                board.
+                service account. Events will be created in this calendar when approved in the
+                planning board. Set{" "}
+                <code className="font-mono text-gray-600">GOOGLE_CALENDAR_CREDENTIALS</code>{" "}
+                in your environment to enable calendar sync.
               </p>
             </div>
           </Section>
