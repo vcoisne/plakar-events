@@ -94,10 +94,19 @@ export async function GET(request: NextRequest) {
         score: true,
         roi: true,
         planningStatus: true,
+        competitorSignals: {
+          where: { sponsorStatus: "yes" },
+          select: { id: true },
+        },
       },
     });
 
-    return NextResponse.json({ events, total: events.length });
+    const eventsWithFlags = events.map(({ competitorSignals, ...event }) => ({
+      ...event,
+      hasCompetitors: competitorSignals.length > 0,
+    }));
+
+    return NextResponse.json({ events: eventsWithFlags, total: eventsWithFlags.length });
   } catch (error) {
     console.error("GET /api/events error:", error);
     return NextResponse.json({ error: "Failed to fetch events" }, { status: 500 });

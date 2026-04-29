@@ -48,6 +48,7 @@ interface Event {
   score: EventScore | null;
   roi: EventROI | null;
   planningStatus: PlanningStatus | null;
+  hasCompetitors: boolean;
 }
 
 interface CplTargets {
@@ -391,6 +392,13 @@ function EventCard({ event, cplTargets }: { event: Event; cplTargets: CplTargets
                     : "bg-red-100 text-red-700"
                 }`}>
                   {event.roi.roiLabel} ROI
+                </span>
+              )}
+
+              {/* Competitor warning */}
+              {event.hasCompetitors && (
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700">
+                  ⚠ Competitors
                 </span>
               )}
 

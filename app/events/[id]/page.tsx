@@ -93,6 +93,16 @@ interface EventStrategy {
   generatedAt: string;
 }
 
+interface CompetitorSignal {
+  id: string;
+  competitorName: string;
+  sponsorStatus: string;
+  sponsorTier: string;
+  evidenceText: string;
+  confidence: string;
+  updatedAt: string;
+}
+
 interface EventDetail {
   id: string;
   name: string;
@@ -116,6 +126,7 @@ interface EventDetail {
   roi: EventROI | null;
   planningStatus: PlanningStatus | null;
   strategy: EventStrategy | null;
+  competitorSignals: CompetitorSignal[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -317,6 +328,12 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
   }>({ estimatedCost: "", estimatedLeads: "", avgDealValue: "", leadToOppRate: "" });
   const [roiSaving, setRoiSaving] = useState(false);
 
+  // Competitor intelligence state
+  const [competitorSignals, setCompetitorSignals] = useState<CompetitorSignal[]>([]);
+  const [competitorScanning, setCompetitorScanning] = useState(false);
+  const [competitorError, setCompetitorError] = useState<string | null>(null);
+  const [competitorEvidenceOpen, setCompetitorEvidenceOpen] = useState<Record<string, boolean>>({});
+
   // Planning status state
   const [planningStatus, setPlanningStatus] = useState<string>("candidate");
   const [planningOwner, setPlanningOwner] = useState<string>("");
@@ -336,6 +353,11 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
         setStrategy(data.strategy);
         setOverrideType(data.strategy.recommendationType);
         setOverrideReason(data.strategy.recommendationReason);
+      }
+
+      // Pre-fill competitor signals
+      if (data.competitorSignals) {
+        setCompetitorSignals(data.competitorSignals);
       }
 
       // Pre-fill planning status
@@ -446,6 +468,24 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
       console.error(err);
     } finally {
       setRoiSaving(false);
+    }
+  };
+
+  // ── Scan competitors ──
+  const handleScanCompetitors = async () => {
+    setCompetitorScanning(true);
+    setCompetitorError(null);
+    try {
+      const res = await fetch(`/api/events/${params.id}/competitors`, { method: "POST" });
+      if (!res.ok) throw new Error("Competitor scan failed");
+      const data = await res.json() as { results: CompetitorSignal[] };
+      setCompetitorSignals(data.results ?? []);
+      // Silently trigger rescore in background
+      fetch(`/api/events/${params.id}/score`, { method: "POST" }).catch(() => {});
+    } catch (err) {
+      setCompetitorError(err instanceof Error ? err.message : "Scan failed");
+    } finally {
+      setCompetitorScanning(false);
     }
   };
 
@@ -900,6 +940,151 @@ export default function EventDetailPage({ params }: { params: { id: string } }) 
                     )}
                   </div>
                 </div>
+              )}
+            </div>
+
+            {/* ── Competitor Intelligence section ── */}
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900 text-lg">Competitor Intelligence</h2>
+                {competitorSignals.length > 0 && (
+                  <button
+                    onClick={handleScanCompetitors}
+                    disabled={competitorScanning}
+                    className="flex items-center gap-1.5 text-sm text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                  >
+                    {competitorScanning ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
+                    Refresh
+                  </button>
+                )}
+              </div>
+
+              {competitorError && (
+                <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                  {competitorError}
+                </div>
+              )}
+
+              {competitorSignals.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center gap-3">
+                  <p className="text-sm text-gray-500">
+                    No competitor data yet. Scan the event website to check for competitor presence.
+                  </p>
+                  <button
+                    onClick={handleScanCompetitors}
+                    disabled={competitorScanning}
+                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  >
+                    {competitorScanning ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
+                    {competitorScanning ? "Scanning…" : "Check competitor presence"}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {/* Summary line */}
+                  <div className="mb-4 text-sm text-gray-600">
+                    {(() => {
+                      const found = competitorSignals.filter((s) => s.sponsorStatus === "yes");
+                      return found.length > 0 ? (
+                        <span className="text-red-600 font-medium">
+                          {found.length} competitor{found.length !== 1 ? "s" : ""} detected:{" "}
+                          {found.map((s) => s.competitorName).join(", ")}
+                        </span>
+                      ) : (
+                        <span className="text-green-600 font-medium">No competitors detected at this event.</span>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Competitor rows */}
+                  <div className="divide-y divide-gray-100 border border-gray-100 rounded-lg overflow-hidden mb-4">
+                    {competitorSignals.map((signal) => {
+                      const isSponsoring = signal.sponsorStatus === "yes";
+                      const isNotFound = signal.sponsorStatus === "no";
+                      const evidenceOpen = competitorEvidenceOpen[signal.id] ?? false;
+                      return (
+                        <div key={signal.id} className="p-3 bg-white hover:bg-gray-50">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            {/* Name */}
+                            <span className="text-sm font-medium text-gray-900 flex-1 min-w-[120px]">
+                              {signal.competitorName}
+                            </span>
+
+                            {/* Status badge */}
+                            <span
+                              className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                isSponsoring
+                                  ? "bg-red-100 text-red-700"
+                                  : isNotFound
+                                  ? "bg-green-100 text-green-700"
+                                  : "bg-gray-100 text-gray-500"
+                              }`}
+                            >
+                              {isSponsoring ? "Sponsoring" : isNotFound ? "Not found" : "Unknown"}
+                            </span>
+
+                            {/* Tier */}
+                            {isSponsoring && signal.sponsorTier && signal.sponsorTier !== "unknown" && (
+                              <span className="px-2 py-0.5 rounded text-xs bg-orange-100 text-orange-700">
+                                {signal.sponsorTier}
+                              </span>
+                            )}
+
+                            {/* Confidence */}
+                            <span
+                              className={`px-2 py-0.5 rounded text-xs font-medium ${confidenceBadge(signal.confidence)}`}
+                            >
+                              {signal.confidence} confidence
+                            </span>
+
+                            {/* Evidence toggle */}
+                            {signal.evidenceText && (
+                              <button
+                                onClick={() =>
+                                  setCompetitorEvidenceOpen((prev) => ({
+                                    ...prev,
+                                    [signal.id]: !prev[signal.id],
+                                  }))
+                                }
+                                className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800"
+                              >
+                                {evidenceOpen ? (
+                                  <ChevronUp className="h-3.5 w-3.5" />
+                                ) : (
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                )}
+                                Evidence
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Collapsible evidence snippet */}
+                          {signal.evidenceText && evidenceOpen && (
+                            <div className="mt-2 ml-1 p-2 bg-gray-50 border border-gray-200 rounded text-xs text-gray-600 italic leading-relaxed">
+                              &ldquo;{signal.evidenceText}&rdquo;
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Last scanned */}
+                  {competitorSignals[0]?.updatedAt && (
+                    <p className="text-xs text-gray-400">
+                      Last scanned {new Date(competitorSignals[0].updatedAt).toLocaleString()}
+                    </p>
+                  )}
+                </>
               )}
             </div>
 
